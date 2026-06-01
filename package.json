@@ -29,6 +29,17 @@
     "xiaomi"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liaoxinjie666/multimodal-mcp.git"
+  },
+  "homepage": "https://github.com/liaoxinjie666/multimodal-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/liaoxinjie666/multimodal-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "jszip": "^3.10.1",

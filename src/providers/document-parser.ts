@@ -10,17 +10,13 @@
  *   - Unsupported image formats (emf/wmf/tif/tiff/svg): save to OUTPUT_DIR + flag
  */
 
-import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
+import { readFile, writeFile, stat } from "node:fs/promises";
 import { join, extname, basename } from "node:path";
 import JSZip from "jszip";
+import { OUTPUT_DIR, ensureOutputDir } from "../utils.js";
 
 // pdfjs-dist v4 is ESM-only. Use legacy build for Node.
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
-
-const OUTPUT_DIR =
-  process.env.OUTPUT_DIR ?? String.raw`C:\zhenghuo\Python\skills\generated`;
-
-await mkdir(OUTPUT_DIR, { recursive: true });
 
 const SUPPORTED_IMG = new Set([
   "png",
@@ -110,13 +106,14 @@ async function extractOffice(filePath: string, ext: string) {
     pptx: { textFiles: ["ppt/slides/slide*.xml"], mediaDir: "ppt/media/" },
     xlsx: { textFiles: ["xl/sharedStrings.xml"], mediaDir: "xl/media/" },
   }[ext];
-  if (!config) throw new Error(`不支持的格式: ${ext}`);
+  if (!config) throw new Error(`Unsupported format: ${ext}`);
 
   const images: InlineImage[] = [];
   const media: MediaItem[] = [];
   const unsupported: Array<{ name: string; format: string; file_path: string }> = [];
 
   // Pull embedded media
+  await ensureOutputDir();
   for (const [entryPath, zipEntry] of Object.entries(zip.files)) {
     if (!entryPath.startsWith(config.mediaDir) || zipEntry.dir) continue;
     const mediaExt = extname(entryPath).toLowerCase().slice(1);
@@ -169,19 +166,19 @@ async function extractOffice(filePath: string, ext: string) {
   };
   if (unsupported.length > 0) {
     result.unsupported = unsupported;
-    result.hint = `发现 ${unsupported.length} 张不支持的图片格式（${unsupported.map((u) => u.format).join(", ")}），已保存到 OUTPUT_DIR;可通过 access_file 加载后再让模型分析`;
+    result.hint = `Found ${unsupported.length} unsupported image(s) (${unsupported.map((u) => u.format).join(", ")}), saved to OUTPUT_DIR; use access_file to load them`;
   }
   return result;
 }
 
 export async function parseDocument(params: ParseDocumentParams) {
-  if (!params.file_path) return jsonError("file_path 必填");
+  if (!params.file_path) return jsonError("file_path is required");
 
   let st;
   try {
     st = await stat(params.file_path);
   } catch {
-    return jsonError(`文件不存在: ${params.file_path}`);
+    return jsonError(`File not found: ${params.file_path}`);
   }
 
   const ext = extname(params.file_path).toLowerCase().slice(1);
@@ -195,8 +192,8 @@ export async function parseDocument(params: ParseDocumentParams) {
       const result = await extractOffice(params.file_path, ext);
       return jsonOk({ ...result, file: basename(params.file_path), size_bytes: st.size });
     }
-    return jsonError(`不支持的文件格式: ${ext}。支持 PDF、DOCX、PPTX、XLSX`);
+    return jsonError(`Unsupported file format: ${ext}. Supported: PDF, DOCX, PPTX, XLSX`);
   } catch (err) {
-    return jsonError(`解析 ${params.file_path} 失败: ${(err as Error).message}`);
+    return jsonError(`Failed to parse ${params.file_path}: ${(err as Error).message}`);
   }
 }

@@ -215,3 +215,53 @@ function parsePngDimensions(buf: Buffer): { width: number; height: number } {
   const height = buf.readUInt32BE(20);
   return { width, height };
 }
+
+// ── Audio extraction ────────────────────────────────────────────────────────
+
+export interface ExtractedAudio {
+  data: Buffer;
+  base64: string;
+  format: string;
+}
+
+/**
+ * Extract audio from a video file as WAV, piped to stdout — no disk writes.
+ * Returns null if the video has no audio stream (ffmpeg exits non-zero or
+ * produces empty output).
+ */
+export async function extractVideoAudio(
+  videoPath: string,
+): Promise<ExtractedAudio | null> {
+  const ffmpeg = await resolveFfmpegPath();
+  if (!ffmpeg) throw new Error("ffmpeg not found");
+
+  const args = [
+    "-i", videoPath,
+    "-vn",               // discard video stream
+    "-acodec", "pcm_s16le", // uncompressed WAV (widely compatible)
+    "-ar", "16000",      // 16kHz sample rate (good for speech)
+    "-ac", "1",          // mono
+    "-f", "wav",
+    "pipe:1",            // stdout
+  ];
+
+  const chunks: Buffer[] = [];
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    const proc = spawn(ffmpeg, args, { stdio: ["ignore", "pipe", "pipe"] });
+    proc.stdout.on("data", (c) => chunks.push(c as Buffer));
+    proc.on("error", reject);
+    proc.on("close", (code) => resolve(code ?? 1));
+  });
+
+  if (exitCode !== 0 || chunks.length === 0) return null;
+
+  const data = Buffer.concat(chunks);
+  // WAV header minimum is 44 bytes; anything less is likely an error
+  if (data.length < 44) return null;
+
+  return {
+    data,
+    base64: data.toString("base64"),
+    format: "wav",
+  };
+}

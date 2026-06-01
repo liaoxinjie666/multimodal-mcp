@@ -258,6 +258,15 @@ server.tool(
 // Start
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ── Startup warnings ─────────────────────────────────────────────────────────
+
+if (!process.env.MINIMAX_API_KEY) {
+  console.error("[WARN] MINIMAX_API_KEY not set — MiniMax tools will return errors");
+}
+if (!process.env.MIMO_API_KEY) {
+  console.error("[WARN] MIMO_API_KEY not set — MiMo tools will return errors");
+}
+
 const transport = new StdioServerTransport();
 console.error("Starting Multimodal MCP Server...");
 console.error(

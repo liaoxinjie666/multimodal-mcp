@@ -4,16 +4,13 @@
  * Also: Video understanding via mimo-v2.5 chat/completions (video_url)
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { join, extname } from "node:path";
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
+import { tsFilename, writeToOutputDir } from "../utils.js";
 
 const MIMO_BASE_URL =
   process.env.MIMO_BASE_URL ?? "https://api.xiaomimimo.com/v1";
 const MIMO_API_KEY = process.env.MIMO_API_KEY ?? "";
-const OUTPUT_DIR =
-  process.env.OUTPUT_DIR ?? join(process.cwd(), "generated");
-
-await mkdir(OUTPUT_DIR, { recursive: true });
 
 function headers(): Record<string, string> {
   return {
@@ -22,12 +19,11 @@ function headers(): Record<string, string> {
   };
 }
 
-function tsFilename(prefix: string, ext: string): string {
-  const ts = new Date()
-    .toISOString()
-    .replace(/[-:T]/g, "")
-    .slice(0, 15);
-  return `${prefix}_${ts}.${ext}`;
+// ── Minimal response types ───────────────────────────────────────────────────
+
+interface MimoTTSResponse {
+  choices?: Array<{ message?: { audio?: { data?: string } } }>;
+  usage?: unknown;
 }
 
 export const PRESET_VOICES = [
@@ -83,21 +79,19 @@ export async function mimoTTS(params: MimoTTSParams) {
     return { error: `MiMo TTS failed (${resp.status}): ${await resp.text()}` };
   }
 
-  const data = (await resp.json()) as any;
-  const audioData: string | undefined =
-    data?.choices?.[0]?.message?.audio?.data;
-  if (!audioData) return { error: `No audio in response`, raw: data };
+  const data = (await resp.json()) as MimoTTSResponse;
+  const audioData = data?.choices?.[0]?.message?.audio?.data;
+  if (!audioData) return { error: "No audio in response", raw: data };
 
   const audioBuf = Buffer.from(audioData, "base64");
   const ext = params.format ?? "wav";
   const filename = tsFilename("mimo_tts", ext);
-  const outPath = join(OUTPUT_DIR, filename);
-  await writeFile(outPath, audioBuf);
+  const { outPath, size_bytes } = await writeToOutputDir(filename, audioBuf);
 
   return {
     success: true,
     file: outPath,
-    size_bytes: audioBuf.length,
+    size_bytes,
     format: ext,
     voice: params.voice ?? "mimo_default",
   };
@@ -141,21 +135,19 @@ export async function mimoTTSVoiceDesign(params: MimoVoiceDesignParams) {
     };
   }
 
-  const data = (await resp.json()) as any;
-  const audioData: string | undefined =
-    data?.choices?.[0]?.message?.audio?.data;
-  if (!audioData) return { error: `No audio in response`, raw: data };
+  const data = (await resp.json()) as MimoTTSResponse;
+  const audioData = data?.choices?.[0]?.message?.audio?.data;
+  if (!audioData) return { error: "No audio in response", raw: data };
 
   const audioBuf = Buffer.from(audioData, "base64");
   const ext = params.format ?? "wav";
   const filename = tsFilename("mimo_voicedesign", ext);
-  const outPath = join(OUTPUT_DIR, filename);
-  await writeFile(outPath, audioBuf);
+  const { outPath, size_bytes } = await writeToOutputDir(filename, audioBuf);
 
   return {
     success: true,
     file: outPath,
-    size_bytes: audioBuf.length,
+    size_bytes,
     format: ext,
     voice_description: params.voice_description,
   };
@@ -224,21 +216,19 @@ export async function mimoTTSVoiceClone(params: MimoVoiceCloneParams) {
     };
   }
 
-  const data = (await resp.json()) as any;
-  const audioResult: string | undefined =
-    data?.choices?.[0]?.message?.audio?.data;
-  if (!audioResult) return { error: `No audio in response`, raw: data };
+  const data = (await resp.json()) as MimoTTSResponse;
+  const audioResult = data?.choices?.[0]?.message?.audio?.data;
+  if (!audioResult) return { error: "No audio in response", raw: data };
 
   const outBuf = Buffer.from(audioResult, "base64");
   const outExt = params.format ?? "wav";
   const filename = tsFilename("mimo_voiceclone", outExt);
-  const outPath = join(OUTPUT_DIR, filename);
-  await writeFile(outPath, outBuf);
+  const { outPath, size_bytes } = await writeToOutputDir(filename, outBuf);
 
   return {
     success: true,
     file: outPath,
-    size_bytes: outBuf.length,
+    size_bytes,
     format: outExt,
   };
 }
@@ -260,6 +250,11 @@ export interface MimoVideoAnalyzeParams {
 }
 
 const MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024; // MiMo base64 limit
+
+interface MimoChatResponse {
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: unknown;
+}
 
 export async function mimoVideoAnalyze(params: MimoVideoAnalyzeParams) {
   if (!MIMO_API_KEY) return { error: "MIMO_API_KEY not set" };
@@ -289,7 +284,7 @@ export async function mimoVideoAnalyze(params: MimoVideoAnalyzeParams) {
 
   const fps = Math.max(0.1, Math.min(10, params.fps ?? 2));
   const mediaResolution = params.media_resolution ?? "default";
-  const prompt = params.question || "请用中文详细描述这个视频的内容,包括场景、人物、动作、字幕、声音等关键信息。";
+  const prompt = params.question || "Describe this video in detail: scene, people, actions, subtitles, and audio.";
 
   const body = {
     model: params.model ?? "mimo-v2.5",
@@ -323,8 +318,8 @@ export async function mimoVideoAnalyze(params: MimoVideoAnalyzeParams) {
     };
   }
 
-  const data = (await resp.json()) as any;
-  const text: string | undefined = data?.choices?.[0]?.message?.content;
+  const data = (await resp.json()) as MimoChatResponse;
+  const text = data?.choices?.[0]?.message?.content;
   if (!text) return { error: "No content in response", raw: data };
 
   return {

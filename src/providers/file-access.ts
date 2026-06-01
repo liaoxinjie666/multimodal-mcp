@@ -10,16 +10,37 @@
  * - Text/code: return as text content
  */
 
-import { readFile, writeFile, copyFile, stat, mkdir } from "node:fs/promises";
-import { join, extname, basename } from "node:path";
+import { readFile, copyFile, stat } from "node:fs/promises";
+import { join, extname, basename, resolve } from "node:path";
+import { OUTPUT_DIR, writeToOutputDir, ensureOutputDir } from "../utils.js";
 import { parseDocument } from "./document-parser.js";
 import { mimoVideoAnalyze } from "./mimo.js";
-import { extractVideoFrames, ffmpegAvailable } from "./video-frames.js";
+import { extractVideoFrames, extractVideoAudio, ffmpegAvailable } from "./video-frames.js";
 
-const OUTPUT_DIR =
-  process.env.OUTPUT_DIR ?? join(process.cwd(), "generated");
+// ── Optional path sandbox ────────────────────────────────────────────────────
+// Set ALLOWED_DIRS to a semicolon-separated list of directories that access_file
+// is allowed to read. Example: "C:\projects;D:\data" or "/home/user/projects"
+// If not set, all paths are allowed (original behavior).
 
-await mkdir(OUTPUT_DIR, { recursive: true });
+function parseAllowedDirs(): string[] | null {
+  const raw = process.env.ALLOWED_DIRS;
+  if (!raw) return null;
+  return raw
+    .split(/[;:]/)
+    .map((d) => d.trim())
+    .filter(Boolean)
+    .map((d) => resolve(d));
+}
+
+const allowedDirs = parseAllowedDirs();
+
+function isPathAllowed(filePath: string): boolean {
+  if (!allowedDirs) return true;
+  const resolved = resolve(filePath);
+  return allowedDirs.some(
+    (dir) => resolved === dir || resolved.startsWith(dir + "/") || resolved.startsWith(dir + "\\"),
+  );
+}
 
 const IMAGE_EXTS = new Set([
   ".png",
@@ -113,14 +134,18 @@ function errResult(message: string): ToolResult {
  * - Error:       { content: [text], isError: true }
  */
 export async function accessFile(params: AccessFileParams): Promise<ToolResult> {
-  if (!params.file_path) return errResult("file_path 必填");
+  if (!params.file_path) return errResult("file_path is required");
+
+  if (!isPathAllowed(params.file_path)) {
+    return errResult(`Access denied: ${params.file_path} is outside ALLOWED_DIRS`);
+  }
 
   let resolved: string;
   try {
     await stat(params.file_path);
     resolved = params.file_path;
   } catch {
-    return errResult(`文件不存在: ${params.file_path}`);
+    return errResult(`File not found: ${params.file_path}`);
   }
 
   const st = await stat(resolved);
@@ -132,13 +157,13 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
   // ── Image ────────────────────────────────────────────────────────────────
   if (IMAGE_EXTS.has(ext)) {
     if (st.size > MAX_IMAGE_BYTES) {
-      return errResult(`图片过大 (${fileSizeMb}MB)，限制 20MB`);
+      return errResult(`Image too large (${fileSizeMb}MB), limit 20MB`);
     }
     const mime = IMAGE_MIME[ext] ?? "image/png";
     const data = (await readFile(resolved)).toString("base64");
     const textPart = params.question
-      ? `用户要求: ${params.question}`
-      : `已加载图片: ${fileName} (${fileSizeKb}KB)`;
+      ? `User question: ${params.question}`
+      : `Loaded image: ${fileName} (${fileSizeKb}KB)`;
     return {
       content: [
         { type: "text", text: textPart },
@@ -150,13 +175,13 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
   // ── Audio ────────────────────────────────────────────────────────────────
   if (AUDIO_EXTS.has(ext)) {
     if (st.size > MAX_AUDIO_BYTES) {
-      return errResult(`音频过大 (${fileSizeMb}MB)，限制 25MB`);
+      return errResult(`Audio too large (${fileSizeMb}MB), limit 25MB`);
     }
     const mime = AUDIO_MIME[ext] ?? "audio/mpeg";
     const data = (await readFile(resolved)).toString("base64");
     const textPart = params.question
-      ? `用户要求: ${params.question}`
-      : `已加载音频: ${fileName} (${fileSizeKb}KB)`;
+      ? `User question: ${params.question}`
+      : `Loaded audio: ${fileName} (${fileSizeKb}KB)`;
     return {
       content: [
         { type: "text", text: textPart },
@@ -176,6 +201,7 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
     const mime = VIDEO_MIME[ext] ?? "video/mp4";
 
     if (mode === "path") {
+      await ensureOutputDir();
       const outName = `access_video_${Date.now()}${ext}`;
       const outPath = join(OUTPUT_DIR, outName);
       await copyFile(resolved, outPath);
@@ -188,7 +214,7 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
             size_bytes: st.size,
             mime,
             mode: "path",
-            note: "MCP 协议无 video content 块,文件已落盘,模型无法直接看到",
+            note: "MCP protocol has no video content block; file saved to disk, model cannot see it directly",
           }),
         ],
       };
@@ -232,24 +258,47 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
     const haveFfmpeg = await ffmpegAvailable();
     if (!haveFfmpeg) {
       return errResult(
-        "video_mode=frames 需要 ffmpeg (设 FFMPEG_PATH 环境变量或 npm i ffmpeg-static);MiMo analyze 模式也已尝试且失败。",
+        "video_mode=frames requires ffmpeg (set FFMPEG_PATH or install ffmpeg-static); MiMo analyze also failed.",
       );
     }
-    const { frames, width, height, duration_seconds } = await extractVideoFrames({
-      video_path: resolved,
-      num_frames: params.video_num_frames,
-    });
-    const intro = `已从视频 ${fileName} 抽 ${frames.length} 帧 (${width}x${height}, 时长 ${duration_seconds.toFixed(1)}s)${params.question ? `: 用户问题: ${params.question}` : ""}`;
-    return {
-      content: [
-        { type: "text", text: intro },
-        ...frames.map((f) => ({
-          type: "image" as const,
-          data: f.base64,
-          mimeType: "image/png",
-        })),
-      ],
-    };
+
+    // Extract frames and audio in parallel
+    const [{ frames, width, height, duration_seconds }, audio] = await Promise.all([
+      extractVideoFrames({
+        video_path: resolved,
+        num_frames: params.video_num_frames,
+      }),
+      extractVideoAudio(resolved).catch(() => null),
+    ]);
+
+    const hasAudio = audio !== null;
+    const frameTimestamps = frames.map((f) => `${f.timestamp_seconds.toFixed(1)}s`).join(", ");
+    const intro = [
+      `Extracted ${frames.length} frames from video ${fileName} (${width}x${height}, duration ${duration_seconds.toFixed(1)}s)`,
+      hasAudio ? `with full audio (16kHz WAV)` : "",
+      `Frame timestamps: [${frameTimestamps}]`,
+      `Each image corresponds to its timestamp in the audio timeline.`,
+      params.question ? `User question: ${params.question}` : "",
+    ].filter(Boolean).join(". ");
+
+    const content: ContentBlock[] = [
+      { type: "text", text: intro },
+      ...frames.map((f) => ({
+        type: "image" as const,
+        data: f.base64,
+        mimeType: "image/png",
+      })),
+    ];
+
+    if (hasAudio) {
+      content.push({
+        type: "audio",
+        data: audio.base64,
+        mimeType: "audio/wav",
+      });
+    }
+
+    return { content };
   }
 
   // ── Document (delegate) ──────────────────────────────────────────────────
@@ -259,7 +308,7 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
 
   // ── Text / code ──────────────────────────────────────────────────────────
   if (st.size > MAX_TEXT_BYTES) {
-    return errResult(`文件过大 (${fileSizeMb}MB)，限制 10MB`);
+    return errResult(`File too large (${fileSizeMb}MB), limit 10MB`);
   }
   const text = await readFile(resolved, "utf8");
   const lineCount = text.split("\n").length;

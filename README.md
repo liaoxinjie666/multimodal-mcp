@@ -43,6 +43,7 @@ npm run build
 | `MIMO_BASE_URL` | `https://api.xiaomimimo.com/v1` | MiMo API base URL |
 | `OUTPUT_DIR` | `./generated` (relative to server CWD) | Output directory for generated files |
 | `FFMPEG_PATH` | (auto: `ffmpeg-static` → PATH) | ffmpeg binary path, used by `access_file` `video_mode=frames` |
+| `ALLOWED_DIRS` | (unset = all paths) | Semicolon-separated list of allowed directories for `access_file`. Example: `C:\projects;D:\data` |
 
 ## Client Integration
 

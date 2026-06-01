@@ -3,18 +3,11 @@
  * Handles: TTS (t2a_v2), Image Generation, Video Generation, Music Generation
  */
 
-import { writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { tsFilename, writeToOutputDir } from "../utils.js";
 
 const MINIMAX_BASE_URL =
   process.env.MINIMAX_BASE_URL ?? "https://api.minimax.chat";
 const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY ?? "";
-
-const OUTPUT_DIR =
-  process.env.OUTPUT_DIR ?? join(process.cwd(), "generated");
-
-// Ensure output dir exists
-await mkdir(OUTPUT_DIR, { recursive: true });
 
 function headers(): Record<string, string> {
   return {
@@ -23,12 +16,46 @@ function headers(): Record<string, string> {
   };
 }
 
-function tsFilename(prefix: string, ext: string): string {
-  const ts = new Date()
-    .toISOString()
-    .replace(/[-:T]/g, "")
-    .slice(0, 15);
-  return `${prefix}_${ts}.${ext}`;
+// ── Minimal response types ───────────────────────────────────────────────────
+
+interface MiniMaxTTSResponse {
+  data?: { audio?: string };
+}
+
+interface MiniMaxImageResponse {
+  data?: { image_urls?: string[] };
+}
+
+interface MiniMaxMusicResponse {
+  data?: { audio?: string; duration?: number };
+}
+
+/** Download a URL to a buffer with a size limit. */
+async function fetchWithLimit(
+  url: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<{ ok: true; data: Buffer } | { ok: false; error: string }> {
+  const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!resp.ok) return { ok: false, error: `Download failed: ${resp.status}` };
+
+  const contentLength = resp.headers.get("content-length");
+  if (contentLength && parseInt(contentLength, 10) > maxBytes) {
+    return {
+      ok: false,
+      error: `File too large (${(parseInt(contentLength, 10) / 1024 / 1024).toFixed(1)}MB), limit ${(maxBytes / 1024 / 1024).toFixed(0)}MB`,
+    };
+  }
+
+  const data = Buffer.from(await resp.arrayBuffer());
+  if (data.length > maxBytes) {
+    return {
+      ok: false,
+      error: `File too large (${(data.length / 1024 / 1024).toFixed(1)}MB), limit ${(maxBytes / 1024 / 1024).toFixed(0)}MB`,
+    };
+  }
+
+  return { ok: true, data };
 }
 
 // ── TTS ─────────────────────────────────────────────────────────────────────
@@ -68,16 +95,15 @@ export async function minimaxTTS(params: MinimaxTTSParams) {
     return { error: `MiniMax TTS failed (${resp.status}): ${await resp.text()}` };
   }
 
-  const data = (await resp.json()) as any;
-  const audioHex: string | undefined = data?.data?.audio;
-  if (!audioHex) return { error: `No audio in response`, raw: data };
+  const data = (await resp.json()) as MiniMaxTTSResponse;
+  const audioHex = data?.data?.audio;
+  if (!audioHex) return { error: "No audio in response", raw: data };
 
   const audioBuf = Buffer.from(audioHex, "hex");
   const filename = tsFilename("minimax_tts", "mp3");
-  const outPath = join(OUTPUT_DIR, filename);
-  await writeFile(outPath, audioBuf);
+  const { outPath, size_bytes } = await writeToOutputDir(filename, audioBuf);
 
-  return { success: true, file: outPath, size_bytes: audioBuf.length, format: "mp3" };
+  return { success: true, file: outPath, size_bytes, format: "mp3" };
 }
 
 // ── Image Generation ────────────────────────────────────────────────────────
@@ -109,20 +135,17 @@ export async function minimaxImage(params: MinimaxImageParams) {
     return { error: `MiniMax image gen failed (${resp.status}): ${await resp.text()}` };
   }
 
-  const data = (await resp.json()) as any;
-  const imageUrls: string[] = data?.data?.image_urls ?? [];
-  if (!imageUrls.length) return { error: `No images in response`, raw: data };
+  const data = (await resp.json()) as MiniMaxImageResponse;
+  const imageUrls = data?.data?.image_urls ?? [];
+  if (!imageUrls.length) return { error: "No images in response", raw: data };
 
-  // Download first image
-  const imgResp = await fetch(imageUrls[0], { signal: AbortSignal.timeout(30_000) });
-  if (!imgResp.ok) return { error: `Download failed: ${imgResp.status}` };
+  const downloaded = await fetchWithLimit(imageUrls[0], 50 * 1024 * 1024, 30_000);
+  if (!downloaded.ok) return { error: downloaded.error };
 
-  const imgBuf = Buffer.from(await imgResp.arrayBuffer());
   const filename = tsFilename("minimax_img", "png");
-  const outPath = join(OUTPUT_DIR, filename);
-  await writeFile(outPath, imgBuf);
+  const { outPath, size_bytes } = await writeToOutputDir(filename, downloaded.data);
 
-  return { success: true, file: outPath, size_bytes: imgBuf.length, url: imageUrls[0] };
+  return { success: true, file: outPath, size_bytes, url: imageUrls[0] };
 }
 
 // ── Video Generation ────────────────────────────────────────────────────────
@@ -154,8 +177,8 @@ export async function minimaxVideo(params: MinimaxVideoParams) {
     return { error: `MiniMax video gen failed (${resp.status}): ${await resp.text()}` };
   }
 
-  const data = (await resp.json()) as any;
-  const taskId: string | undefined = data?.task_id;
+  const data = (await resp.json()) as Record<string, unknown>;
+  const taskId = data?.task_id as string | undefined;
   if (taskId) {
     return {
       success: true,
@@ -165,7 +188,8 @@ export async function minimaxVideo(params: MinimaxVideoParams) {
     };
   }
 
-  const videoUrl = data?.video_url ?? data?.data?.video_url;
+  const nested = data?.data as Record<string, unknown> | undefined;
+  const videoUrl = (data?.video_url as string) ?? (nested?.video_url as string);
   if (videoUrl) return { success: true, video_url: videoUrl };
 
   return { success: true, raw: data };
@@ -184,19 +208,17 @@ export async function minimaxVideoStatus(taskId: string) {
     return { error: `Query failed (${resp.status}): ${await resp.text()}` };
   }
 
-  const data = (await resp.json()) as any;
-  const status: string = data?.status ?? "unknown";
+  const data = (await resp.json()) as Record<string, unknown>;
+  const status = (data?.status as string) ?? "unknown";
 
   if (status === "Success") {
-    const videoUrl: string = data?.video?.url ?? data?.file_id ?? "";
+    const videoUrl = (data?.video as { url?: string })?.url ?? (data?.file_id as string) ?? "";
     if (videoUrl.startsWith("http")) {
-      const vidResp = await fetch(videoUrl, { signal: AbortSignal.timeout(60_000) });
-      if (vidResp.ok) {
-        const vidBuf = Buffer.from(await vidResp.arrayBuffer());
+      const downloaded = await fetchWithLimit(videoUrl, 500 * 1024 * 1024, 120_000);
+      if (downloaded.ok) {
         const filename = tsFilename("minimax_video", "mp4");
-        const outPath = join(OUTPUT_DIR, filename);
-        await writeFile(outPath, vidBuf);
-        return { success: true, status: "completed", file: outPath, size_bytes: vidBuf.length };
+        const { outPath, size_bytes } = await writeToOutputDir(filename, downloaded.data);
+        return { success: true, status: "completed", file: outPath, size_bytes };
       }
     }
     return { success: true, status: "completed", video_url: videoUrl };
@@ -239,19 +261,18 @@ export async function minimaxMusic(params: MinimaxMusicParams) {
     return { error: `MiniMax music gen failed (${resp.status}): ${await resp.text()}` };
   }
 
-  const data = (await resp.json()) as any;
-  const audioHex: string | undefined = data?.data?.audio;
-  if (!audioHex) return { error: `No audio in response`, raw: data };
+  const data = (await resp.json()) as MiniMaxMusicResponse;
+  const audioHex = data?.data?.audio;
+  if (!audioHex) return { error: "No audio in response", raw: data };
 
   const audioBuf = Buffer.from(audioHex, "hex");
   const filename = tsFilename("minimax_music", "mp3");
-  const outPath = join(OUTPUT_DIR, filename);
-  await writeFile(outPath, audioBuf);
+  const { outPath, size_bytes } = await writeToOutputDir(filename, audioBuf);
 
   return {
     success: true,
     file: outPath,
-    size_bytes: audioBuf.length,
+    size_bytes,
     duration: data?.data?.duration,
   };
 }
