@@ -1,5 +1,5 @@
 {
-  "name": "@liaoxinjie666/multimodal-mcp",
+  "name": "mcp-multimodal",
   "version": "1.0.0",
   "description": "MCP server for multimodal generation: MiniMax (TTS/Image/Video/Music) + MiMo (TTS)",
   "type": "module",
