@@ -34,7 +34,7 @@ function parseAllowedDirs(): string[] | null {
 
 const allowedDirs = parseAllowedDirs();
 
-function isPathAllowed(filePath: string): boolean {
+export function isPathAllowed(filePath: string): boolean {
   if (!allowedDirs) return true;
   const resolved = resolve(filePath);
   return allowedDirs.some(
@@ -106,6 +106,7 @@ export interface AccessFileParams {
   video_fps?: number; // MiMo analyze mode: 0.1-10, default 2
   video_num_frames?: number; // frames mode: 1-256, default 8
   video_media_resolution?: "default" | "max"; // MiMo analyze mode
+  model?: string; // MiMo analyze mode: model to use for video analysis
 }
 
 type ContentBlock =
@@ -227,6 +228,7 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
         system_prompt: params.system_prompt,
         fps: params.video_fps,
         media_resolution: params.video_media_resolution,
+        model: params.model,
       });
       if ((result as { error?: string }).error) {
         if (mode === "auto") {

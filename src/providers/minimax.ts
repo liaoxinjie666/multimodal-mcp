@@ -87,9 +87,10 @@ async function fetchStreamToDisk(
   const fileStream = createWriteStream(outPath);
   let downloaded = 0;
 
-  // Register finish/error listeners BEFORE any writes to avoid race condition
+  // Register close/error listeners BEFORE any writes to avoid race condition.
+  // Use "close" instead of "finish" — destroy() emits close but not finish.
   const finished = new Promise<void>((resolve, reject) => {
-    fileStream.on("finish", resolve);
+    fileStream.on("close", resolve);
     fileStream.on("error", reject);
   });
 

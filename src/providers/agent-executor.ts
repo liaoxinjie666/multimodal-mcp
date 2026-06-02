@@ -22,14 +22,12 @@ import {
   MAX_IMAGE_BYTES,
   MAX_AUDIO_BYTES,
   MAX_TEXT_BYTES,
+  isPathAllowed,
 } from "./file-access.js";
 import { parseDocument } from "./document-parser.js";
+import { MIMO_BASE_URL, MIMO_API_KEY, mimoHeaders } from "./mimo-config.js";
 
 // ── Config ─────────────────────────────────────────────────────────────────
-
-const MIMO_BASE_URL =
-  process.env.MIMO_BASE_URL ?? "https://api.xiaomimimo.com/v1";
-const MIMO_API_KEY = process.env.MIMO_API_KEY ?? "";
 
 const CONVERSATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_CONVERSATIONS = 100;
@@ -120,7 +118,7 @@ let cleanupStarted = false;
 function startCleanupIfNeeded() {
   if (cleanupStarted) return;
   cleanupStarted = true;
-  setInterval(() => {
+  const timer = setInterval(() => {
     const now = Date.now();
     for (const [id, conv] of conversations) {
       if (now - conv.last_active > CONVERSATION_TTL_MS) {
@@ -128,6 +126,7 @@ function startCleanupIfNeeded() {
       }
     }
   }, CLEANUP_INTERVAL_MS);
+  timer.unref();
 }
 
 function createConversation(
@@ -173,6 +172,10 @@ async function loadContentAsBlocks(
 
   if (!contentPath) {
     return { error: "Either content_path or content_text is required" };
+  }
+
+  if (!isPathAllowed(contentPath)) {
+    return { error: `Path not allowed: ${contentPath}` };
   }
 
   const ext = extname(contentPath).toLowerCase();
@@ -296,10 +299,7 @@ async function callMimo(params: {
 
   const resp = await fetch(`${MIMO_BASE_URL}/chat/completions`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "api-key": MIMO_API_KEY,
-    },
+    headers: mimoHeaders(),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(180_000),
   });

@@ -77,11 +77,12 @@ function jsonOk(data: Record<string, unknown>): ToolResult {
 
 // Strip XML tags, collapse whitespace — used for Office text extraction.
 function stripXml(xml: string, ext: string): string {
-  const clean = xml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-  if (ext === "pptx") return clean + "\n\n---\n\n";
-  return (
-    clean.replace(/<\/w:p>/g, "\n").replace(/<\/w:tr>/g, "\n") + "\n"
-  );
+  if (ext === "pptx") {
+    return xml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() + "\n\n---\n\n";
+  }
+  // DOCX: replace paragraph/row-ending tags BEFORE stripping all tags
+  const withBreaks = xml.replace(/<\/w:p>/g, "\n").replace(/<\/w:tr>/g, "\n");
+  return withBreaks.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() + "\n";
 }
 
 async function extractPdf(filePath: string) {

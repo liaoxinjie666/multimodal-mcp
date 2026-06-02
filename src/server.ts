@@ -244,6 +244,10 @@ server.tool(
       .enum(["default", "max"])
       .default("default")
       .describe("MiMo video analyze: per-frame resolution tier"),
+    model: z
+      .string()
+      .default("mimo-v2.5")
+      .describe("Model for video analysis (supports any OpenAI-compatible API)"),
   },
   async (params) => accessFile(params),
 );

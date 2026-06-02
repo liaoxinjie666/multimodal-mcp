@@ -7,17 +7,8 @@
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { tsFilename, writeToOutputDir } from "../utils.js";
-
-const MIMO_BASE_URL =
-  process.env.MIMO_BASE_URL ?? "https://api.xiaomimimo.com/v1";
-const MIMO_API_KEY = process.env.MIMO_API_KEY ?? "";
-
-function headers(): Record<string, string> {
-  return {
-    "Content-Type": "application/json",
-    "api-key": MIMO_API_KEY,
-  };
-}
+import { MIMO_BASE_URL, MIMO_API_KEY, mimoHeaders } from "./mimo-config.js";
+import { isPathAllowed } from "./file-access.js";
 
 // ── Minimal response types ───────────────────────────────────────────────────
 
@@ -72,7 +63,7 @@ export async function mimoTTS(params: MimoTTSParams) {
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: headers(),
+    headers: mimoHeaders(),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(120_000),
   });
@@ -126,7 +117,7 @@ export async function mimoTTSVoiceDesign(params: MimoVoiceDesignParams) {
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: headers(),
+    headers: mimoHeaders(),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(120_000),
   });
@@ -168,6 +159,9 @@ export async function mimoTTSVoiceClone(params: MimoVoiceCloneParams) {
   if (!MIMO_API_KEY) return { error: "MIMO_API_KEY not set" };
 
   const refPath = params.reference_audio_path;
+  if (!isPathAllowed(refPath)) {
+    return { error: `Path not allowed: ${refPath}` };
+  }
   let audioData: Buffer;
   try {
     audioData = await readFile(refPath);
@@ -207,7 +201,7 @@ export async function mimoTTSVoiceClone(params: MimoVoiceCloneParams) {
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: headers(),
+    headers: mimoHeaders(),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(180_000),
   });
@@ -314,7 +308,7 @@ export async function mimoVideoAnalyze(params: MimoVideoAnalyzeParams) {
 
   const resp = await fetch(`${MIMO_BASE_URL}/chat/completions`, {
     method: "POST",
-    headers: headers(),
+    headers: mimoHeaders(),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(180_000),
   });
