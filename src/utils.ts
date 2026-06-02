@@ -22,11 +22,13 @@ export async function ensureOutputDir(): Promise<void> {
  * Generate a timestamped filename: `{prefix}_{YYYYMMDDHHmmss}.{ext}`
  */
 export function tsFilename(prefix: string, ext: string): string {
-  const ts = new Date()
+  const now = new Date();
+  const ts = now
     .toISOString()
     .replace(/[-:T]/g, "")
     .slice(0, 15);
-  return `${prefix}_${ts}.${ext}`;
+  const ms = String(now.getMilliseconds()).padStart(3, "0");
+  return `${prefix}_${ts}${ms}.${ext}`;
 }
 
 /** Write a buffer to OUTPUT_DIR and return the absolute path. */

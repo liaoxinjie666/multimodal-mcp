@@ -42,7 +42,7 @@ function isPathAllowed(filePath: string): boolean {
   );
 }
 
-const IMAGE_EXTS = new Set([
+export const IMAGE_EXTS = new Set([
   ".png",
   ".jpg",
   ".jpeg",
@@ -51,7 +51,7 @@ const IMAGE_EXTS = new Set([
   ".bmp",
   ".svg",
 ]);
-const AUDIO_EXTS = new Set([
+export const AUDIO_EXTS = new Set([
   ".mp3",
   ".wav",
   ".m4a",
@@ -59,10 +59,10 @@ const AUDIO_EXTS = new Set([
   ".flac",
   ".aac",
 ]);
-const VIDEO_EXTS = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv"]);
-const DOC_EXTS = new Set([".pdf", ".docx", ".pptx", ".xlsx"]);
+export const VIDEO_EXTS = new Set([".mp4", ".webm", ".mov", ".avi", ".mkv"]);
+export const DOC_EXTS = new Set([".pdf", ".docx", ".pptx", ".xlsx"]);
 
-const IMAGE_MIME: Record<string, string> = {
+export const IMAGE_MIME: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -71,7 +71,7 @@ const IMAGE_MIME: Record<string, string> = {
   ".bmp": "image/bmp",
   ".svg": "image/svg+xml",
 };
-const AUDIO_MIME: Record<string, string> = {
+export const AUDIO_MIME: Record<string, string> = {
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",
   ".m4a": "audio/mp4",
@@ -79,7 +79,7 @@ const AUDIO_MIME: Record<string, string> = {
   ".flac": "audio/flac",
   ".aac": "audio/aac",
 };
-const VIDEO_MIME: Record<string, string> = {
+export const VIDEO_MIME: Record<string, string> = {
   ".mp4": "video/mp4",
   ".webm": "video/webm",
   ".mov": "video/quicktime",
@@ -87,13 +87,14 @@ const VIDEO_MIME: Record<string, string> = {
   ".mkv": "video/x-matroska",
 };
 
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB
-const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // 25MB
-const MAX_TEXT_BYTES = 10 * 1024 * 1024; // 10MB
+export const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB
+export const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // 25MB
+export const MAX_TEXT_BYTES = 10 * 1024 * 1024; // 10MB
 
 export interface AccessFileParams {
   file_path: string;
   question?: string;
+  system_prompt?: string;
   /**
    * Video processing mode.
    * - "auto": try MiMo video analysis (server-side, returns text). Fall back to ffmpeg frames if API fails / no key.
@@ -103,7 +104,7 @@ export interface AccessFileParams {
    */
   video_mode?: "auto" | "analyze" | "frames" | "path";
   video_fps?: number; // MiMo analyze mode: 0.1-10, default 2
-  video_num_frames?: number; // frames mode: 1-32, default 8
+  video_num_frames?: number; // frames mode: 1-256, default 8
   video_media_resolution?: "default" | "max"; // MiMo analyze mode
 }
 
@@ -141,14 +142,13 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
   }
 
   let resolved: string;
+  let st;
   try {
-    await stat(params.file_path);
+    st = await stat(params.file_path);
     resolved = params.file_path;
   } catch {
     return errResult(`File not found: ${params.file_path}`);
   }
-
-  const st = await stat(resolved);
   const ext = extname(resolved).toLowerCase();
   const fileName = basename(resolved);
   const fileSizeKb = (st.size / 1024).toFixed(0);
@@ -224,6 +224,7 @@ export async function accessFile(params: AccessFileParams): Promise<ToolResult> 
       const result = await mimoVideoAnalyze({
         video_path: resolved,
         question: params.question,
+        system_prompt: params.system_prompt,
         fps: params.video_fps,
         media_resolution: params.video_media_resolution,
       });

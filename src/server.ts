@@ -26,6 +26,7 @@ import {
 
 import { accessFile } from "./providers/file-access.js";
 import { parseDocument } from "./providers/document-parser.js";
+import { agentExecute } from "./providers/agent-executor.js";
 
 const server = new McpServer({
   name: "multimodal",
@@ -217,6 +218,10 @@ server.tool(
       .string()
       .optional()
       .describe("Optional question/instruction paired with the file"),
+    system_prompt: z
+      .string()
+      .optional()
+      .describe("System instructions for MiMo video analysis (sets model behavior/persona)"),
     video_mode: z
       .enum(["auto", "analyze", "frames", "path"])
       .default("auto")
@@ -232,9 +237,9 @@ server.tool(
     video_num_frames: z
       .number()
       .min(1)
-      .max(32)
+      .max(256)
       .default(8)
-      .describe("ffmpeg frames mode: number of frames to extract (1-32)"),
+      .describe("ffmpeg frames mode: number of frames to extract (1-256, high values consume significant memory)"),
     video_media_resolution: z
       .enum(["default", "max"])
       .default("default")
@@ -252,6 +257,83 @@ server.tool(
       .describe("Absolute path to the document file"),
   },
   async (params) => parseDocument(params),
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Agent Tools
+// ═══════════════════════════════════════════════════════════════════════════════
+
+server.tool(
+  "agent_execute",
+  "Multi-turn agent executor. Sends multimodal content (video/image/audio/document) and tool definitions to MiMo for analysis. MiMo returns tool_calls for the calling agent to execute. Call repeatedly: first call with content + tools, subsequent calls with conversation_id + tool_results to continue.",
+  {
+    content_path: z
+      .string()
+      .optional()
+      .describe("Path to file (video/image/audio/document/text) to analyze"),
+    content_text: z
+      .string()
+      .optional()
+      .describe("Direct text content to process"),
+    tools: z
+      .array(
+        z.object({
+          name: z.string().describe("Tool name"),
+          description: z.string().describe("Tool description"),
+          parameters: z
+            .record(z.unknown())
+            .describe("JSON Schema for tool parameters"),
+        }),
+      )
+      .describe(
+        "Tools available to MiMo (calling agent must execute any returned tool_calls)",
+      ),
+    system_prompt: z
+      .string()
+      .optional()
+      .describe("System instructions for MiMo"),
+    user_prompt: z.string().describe("Task description"),
+    conversation_id: z
+      .string()
+      .optional()
+      .describe(
+        "Conversation ID from a previous call. Omit to start new conversation.",
+      ),
+    tool_results: z
+      .array(
+        z.object({
+          tool_call_id: z
+            .string()
+            .describe("ID of the tool call this result answers"),
+          tool_name: z
+            .string()
+            .describe("Name of the tool that was executed"),
+          result: z
+            .string()
+            .describe("JSON string of tool execution result"),
+          error: z
+            .string()
+            .optional()
+            .describe("Error message if tool execution failed"),
+        }),
+      )
+      .optional()
+      .describe("Results of tool_calls from the previous call"),
+    max_rounds: z
+      .number()
+      .min(1)
+      .max(20)
+      .default(10)
+      .describe("Maximum conversation rounds before forced stop"),
+    model: z
+      .string()
+      .default("mimo-v2.5")
+      .describe("MiMo model to use"),
+  },
+  async (params) => {
+    const result = await agentExecute(params);
+    return { content: [{ type: "text", text: JSON.stringify(result) }] };
+  },
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════

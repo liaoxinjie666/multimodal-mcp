@@ -74,7 +74,7 @@ export async function ffmpegAvailable(): Promise<boolean> {
 
 export interface ExtractFramesParams {
   video_path: string;
-  num_frames?: number; // default 8, range 1-32
+  num_frames?: number; // default 8, range 1-256
   width?: number; // default 512, caps long edge to reduce token cost
 }
 
@@ -98,10 +98,15 @@ async function getVideoDuration(videoPath: string): Promise<number> {
     const proc = spawn(ffmpeg, ["-i", videoPath], {
       stdio: ["ignore", "ignore", "pipe"],
     });
+    const timer = setTimeout(() => {
+      proc.kill();
+      reject(new Error("ffmpeg timed out probing video duration"));
+    }, 30_000);
     let stderr = "";
     proc.stderr.on("data", (c) => (stderr += c.toString()));
-    proc.on("error", reject);
+    proc.on("error", (e) => { clearTimeout(timer); reject(e); });
     proc.on("close", () => {
+      clearTimeout(timer);
       const m = stderr.match(/Duration:\s+(\d+):(\d+):(\d+\.\d+)/);
       if (!m) return reject(new Error("Could not parse video duration"));
       const h = parseInt(m[1], 10);
@@ -147,7 +152,7 @@ export async function extractVideoFrames(
   height: number;
   duration_seconds: number;
 }> {
-  const numFrames = Math.max(1, Math.min(32, params.num_frames ?? 8));
+  const numFrames = Math.max(1, Math.min(256, params.num_frames ?? 8));
   const scale = params.width ?? 512;
   const duration = await getVideoDuration(params.video_path);
 
@@ -176,12 +181,17 @@ export async function extractVideoFrames(
   const chunks: Buffer[] = [];
   await new Promise<void>((resolve, reject) => {
     const proc = spawn(ffmpeg, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => {
+      proc.kill();
+      reject(new Error("ffmpeg timed out extracting frames"));
+    }, 120_000);
     proc.stdout.on("data", (c) => chunks.push(c as Buffer));
     proc.stderr.on("data", () => {
       // ffmpeg logs progress to stderr; ignore unless we fail
     });
-    proc.on("error", reject);
+    proc.on("error", (e) => { clearTimeout(timer); reject(e); });
     proc.on("close", (code) => {
+      clearTimeout(timer);
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg exited with code ${code}`));
     });
@@ -248,9 +258,13 @@ export async function extractVideoAudio(
   const chunks: Buffer[] = [];
   const exitCode = await new Promise<number>((resolve, reject) => {
     const proc = spawn(ffmpeg, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const timer = setTimeout(() => {
+      proc.kill();
+      reject(new Error("ffmpeg timed out extracting audio"));
+    }, 120_000);
     proc.stdout.on("data", (c) => chunks.push(c as Buffer));
-    proc.on("error", reject);
-    proc.on("close", (code) => resolve(code ?? 1));
+    proc.on("error", (e) => { clearTimeout(timer); reject(e); });
+    proc.on("close", (code) => { clearTimeout(timer); resolve(code ?? 1); });
   });
 
   if (exitCode !== 0 || chunks.length === 0) return null;

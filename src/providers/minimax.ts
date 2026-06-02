@@ -3,7 +3,9 @@
  * Handles: TTS (t2a_v2), Image Generation, Video Generation, Music Generation
  */
 
-import { tsFilename, writeToOutputDir } from "../utils.js";
+import { createWriteStream } from "node:fs";
+import { tsFilename, writeToOutputDir, ensureOutputDir, OUTPUT_DIR } from "../utils.js";
+import { join } from "node:path";
 
 const MINIMAX_BASE_URL =
   process.env.MINIMAX_BASE_URL ?? "https://api.minimax.chat";
@@ -56,6 +58,65 @@ async function fetchWithLimit(
   }
 
   return { ok: true, data };
+}
+
+/**
+ * Download a URL directly to a file on disk via stream.
+ * Memory usage stays constant (~chunk size) regardless of file size.
+ */
+async function fetchStreamToDisk(
+  url: string,
+  outPath: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<{ ok: true; size_bytes: number } | { ok: false; error: string }> {
+  const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!resp.ok) return { ok: false, error: `Download failed: ${resp.status}` };
+
+  const contentLength = resp.headers.get("content-length");
+  if (contentLength && parseInt(contentLength, 10) > maxBytes) {
+    return {
+      ok: false,
+      error: `File too large (${(parseInt(contentLength, 10) / 1024 / 1024).toFixed(1)}MB), limit ${(maxBytes / 1024 / 1024).toFixed(0)}MB`,
+    };
+  }
+
+  if (!resp.body) return { ok: false, error: "No response body" };
+
+  await ensureOutputDir();
+  const fileStream = createWriteStream(outPath);
+  let downloaded = 0;
+
+  // Register finish/error listeners BEFORE any writes to avoid race condition
+  const finished = new Promise<void>((resolve, reject) => {
+    fileStream.on("finish", resolve);
+    fileStream.on("error", reject);
+  });
+
+  const reader = resp.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      downloaded += value.length;
+      if (downloaded > maxBytes) {
+        fileStream.destroy();
+        const { unlink } = await import("node:fs/promises");
+        await unlink(outPath).catch(() => {});
+        return {
+          ok: false,
+          error: `File too large (${(downloaded / 1024 / 1024).toFixed(1)}MB), limit ${(maxBytes / 1024 / 1024).toFixed(0)}MB`,
+        };
+      }
+      fileStream.write(value);
+    }
+  } finally {
+    fileStream.end();
+  }
+
+  await finished;
+
+  return { ok: true, size_bytes: downloaded };
 }
 
 // ── TTS ─────────────────────────────────────────────────────────────────────
@@ -214,11 +275,11 @@ export async function minimaxVideoStatus(taskId: string) {
   if (status === "Success") {
     const videoUrl = (data?.video as { url?: string })?.url ?? (data?.file_id as string) ?? "";
     if (videoUrl.startsWith("http")) {
-      const downloaded = await fetchWithLimit(videoUrl, 500 * 1024 * 1024, 120_000);
+      const filename = tsFilename("minimax_video", "mp4");
+      const outPath = join(OUTPUT_DIR, filename);
+      const downloaded = await fetchStreamToDisk(videoUrl, outPath, 500 * 1024 * 1024, 120_000);
       if (downloaded.ok) {
-        const filename = tsFilename("minimax_video", "mp4");
-        const { outPath, size_bytes } = await writeToOutputDir(filename, downloaded.data);
-        return { success: true, status: "completed", file: outPath, size_bytes };
+        return { success: true, status: "completed", file: outPath, size_bytes: downloaded.size_bytes };
       }
     }
     return { success: true, status: "completed", video_url: videoUrl };

@@ -118,6 +118,8 @@ async function extractOffice(filePath: string, ext: string) {
     if (!entryPath.startsWith(config.mediaDir) || zipEntry.dir) continue;
     const mediaExt = extname(entryPath).toLowerCase().slice(1);
     const name = basename(entryPath);
+    // Sanitize: skip entries with path traversal chars
+    if (name.includes("..") || name.includes("/") || name.includes("\\")) continue;
     const data = await zipEntry.async("base64");
     const buf = Buffer.from(data, "base64");
 
@@ -149,7 +151,7 @@ async function extractOffice(filePath: string, ext: string) {
   let text = "";
   for (const pattern of config.textFiles) {
     const regex = pattern.includes("*")
-      ? new RegExp("^" + pattern.replace("*", "[^/]+") + "$")
+      ? new RegExp("^" + pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\\*", "[^/]+") + "$")
       : null;
     for (const [entryPath, zipEntry] of Object.entries(zip.files)) {
       const match = regex ? regex.test(entryPath) : entryPath === pattern;

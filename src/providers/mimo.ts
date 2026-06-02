@@ -54,6 +54,8 @@ export async function mimoTTS(params: MimoTTSParams) {
   const url = `${MIMO_BASE_URL}/chat/completions`;
   const messages: Array<{ role: string; content: string }> = [];
 
+  // MiMo TTS uses user/assistant roles (not system) — the API interprets
+  // user message as style/context and assistant message as text to synthesize.
   if (params.style_instruction) {
     messages.push({ role: "user", content: params.style_instruction });
   }
@@ -244,6 +246,7 @@ export async function mimoTTSVoiceClone(params: MimoVoiceCloneParams) {
 export interface MimoVideoAnalyzeParams {
   video_path: string;
   question?: string;
+  system_prompt?: string;
   fps?: number;
   media_resolution?: "default" | "max";
   model?: string;
@@ -286,22 +289,26 @@ export async function mimoVideoAnalyze(params: MimoVideoAnalyzeParams) {
   const mediaResolution = params.media_resolution ?? "default";
   const prompt = params.question || "Describe this video in detail: scene, people, actions, subtitles, and audio.";
 
+  const messages: Array<{ role: string; content: unknown }> = [];
+  if (params.system_prompt) {
+    messages.push({ role: "system", content: params.system_prompt });
+  }
+  messages.push({
+    role: "user",
+    content: [
+      {
+        type: "video_url",
+        video_url: { url: dataUrl },
+        fps,
+        media_resolution: mediaResolution,
+      },
+      { type: "text", text: prompt },
+    ],
+  });
+
   const body = {
     model: params.model ?? "mimo-v2.5",
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "video_url",
-            video_url: { url: dataUrl },
-            fps,
-            media_resolution: mediaResolution,
-          },
-          { type: "text", text: prompt },
-        ],
-      },
-    ],
+    messages,
     max_completion_tokens: 2048,
   };
 
