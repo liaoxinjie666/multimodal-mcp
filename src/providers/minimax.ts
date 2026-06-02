@@ -109,7 +109,9 @@ async function fetchStreamToDisk(
           error: `File too large (${(downloaded / 1024 / 1024).toFixed(1)}MB), limit ${(maxBytes / 1024 / 1024).toFixed(0)}MB`,
         };
       }
-      fileStream.write(value);
+      if (!fileStream.write(value)) {
+        await new Promise<void>((r) => fileStream.once("drain", r));
+      }
     }
   } finally {
     fileStream.end();
@@ -225,7 +227,7 @@ export async function minimaxVideo(params: MinimaxVideoParams) {
   const body = {
     model: params.model ?? "MiniMax-Hailuo-2.3",
     prompt: params.prompt,
-    duration: String(params.duration ?? 6),
+    duration: params.duration ?? 6,
   };
 
   const resp = await fetch(url, {
@@ -306,9 +308,9 @@ export async function minimaxMusic(params: MinimaxMusicParams) {
     model: params.model ?? "music-2.5+",
     prompt: params.prompt,
   };
-  if (params.instrumental) body.instrumental = true;
+  body.instrumental = params.instrumental ?? false;
+  body.lyrics = params.lyrics || "纯音乐";
   if (params.lyrics) {
-    body.lyrics = params.lyrics;
     body.lyrics_optimizer = true;
   }
 
@@ -316,7 +318,7 @@ export async function minimaxMusic(params: MinimaxMusicParams) {
     method: "POST",
     headers: headers(),
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(120_000),
+    signal: AbortSignal.timeout(600_000),
   });
 
   if (!resp.ok) {

@@ -108,7 +108,7 @@ server.tool(
   "Generate music from text prompt using MiniMax.",
   {
     prompt: z.string().describe("Music style and content description"),
-    lyrics: z.string().default("").describe("Lyrics (optional, for vocal music)"),
+    lyrics: z.string().default("").describe("Lyrics for the song. For instrumental music or no lyrics, omit or pass empty string (auto-fills placeholder)."),
     instrumental: z
       .boolean()
       .default(false)
@@ -135,7 +135,7 @@ server.tool(
         'Text to synthesize. Can include style tags like "(温柔)你好" or "(唱歌)歌词"',
       ),
     voice: z
-      .enum(PRESET_VOICES as unknown as [string, ...string[]])
+      .enum([...PRESET_VOICES] as [string, ...string[]])
       .default("mimo_default")
       .describe("Preset voice ID"),
     style_instruction: z
@@ -269,7 +269,7 @@ server.tool(
 
 server.tool(
   "agent_execute",
-  "Multi-turn agent executor. Sends multimodal content (video/image/audio/document) and tool definitions to MiMo for analysis. MiMo returns tool_calls for the calling agent to execute. Call repeatedly: first call with content + tools, subsequent calls with conversation_id + tool_results to continue.",
+  "Multimodal agentic executor. MiMo 'sees' your video/image/audio/document, reasons about it, and returns tool_calls for you to execute. Give it tools (e.g. ffmpeg, code exec, file ops) + content, and it will autonomously plan and invoke actions based on what it observes. Multi-turn: first call with content + tools, then continue with conversation_id + tool_results.",
   {
     content_path: z
       .string()
@@ -285,7 +285,7 @@ server.tool(
           name: z.string().describe("Tool name"),
           description: z.string().describe("Tool description"),
           parameters: z
-            .record(z.unknown())
+            .record(z.string(), z.unknown())
             .describe("JSON Schema for tool parameters"),
         }),
       )

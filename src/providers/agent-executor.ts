@@ -33,6 +33,7 @@ const CONVERSATION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_CONVERSATIONS = 100;
 const CLEANUP_INTERVAL_MS = 60 * 1000; // 60 seconds
 const MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024; // 50MB (matches mimo.ts)
+const MAX_CONVERSATION_BYTES = 10 * 1024 * 1024; // 10MB per conversation
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,7 @@ interface ConversationState {
   round: number;
   created_at: number;
   last_active: number;
+  total_bytes: number;
 }
 
 interface MimoChatCompletionResponse {
@@ -114,6 +116,26 @@ interface MimoChatCompletionResponse {
 
 const conversations = new Map<string, ConversationState>();
 let cleanupStarted = false;
+
+/** Rough byte estimate of a message (JSON overhead + content). */
+function estimateMessageBytes(msg: ConversationMessage): number {
+  let bytes = 64; // base JSON overhead
+  if (typeof msg.content === "string") {
+    bytes += msg.content.length * 2;
+  } else if (Array.isArray(msg.content)) {
+    for (const block of msg.content) {
+      if (typeof block === "object" && block !== null) {
+        bytes += JSON.stringify(block).length * 2;
+      }
+    }
+  }
+  if (msg.tool_calls) {
+    for (const tc of msg.tool_calls) {
+      bytes += tc.function.arguments.length * 2;
+    }
+  }
+  return bytes;
+}
 
 function startCleanupIfNeeded() {
   if (cleanupStarted) return;
@@ -147,6 +169,7 @@ function createConversation(
   }
 
   const now = Date.now();
+  const total_bytes = messages.reduce((sum, m) => sum + estimateMessageBytes(m), 0);
   const state: ConversationState = {
     id: randomUUID(),
     messages,
@@ -155,6 +178,7 @@ function createConversation(
     round: 0,
     created_at: now,
     last_active: now,
+    total_bytes,
   };
   conversations.set(state.id, state);
   return state;
@@ -372,14 +396,25 @@ export async function agentExecute(
     // Append tool results as tool role messages
     if (params.tool_results) {
       for (const tr of params.tool_results) {
-        conv.messages.push({
+        const msg: ConversationMessage = {
           role: "tool",
           tool_call_id: tr.tool_call_id,
           name: tr.tool_name,
           content: tr.error
             ? JSON.stringify({ error: tr.error })
             : tr.result,
-        });
+        };
+        const msgBytes = estimateMessageBytes(msg);
+        if (conv.total_bytes + msgBytes > MAX_CONVERSATION_BYTES) {
+          return {
+            conversation_id: conv.id,
+            status: "error",
+            round: conv.round,
+            error: `Conversation size limit exceeded (${(MAX_CONVERSATION_BYTES / 1024 / 1024).toFixed(0)}MB). Cannot add more data.`,
+          };
+        }
+        conv.messages.push(msg);
+        conv.total_bytes += msgBytes;
       }
     }
 
@@ -417,6 +452,15 @@ export async function agentExecute(
     messages.push({ role: "user", content: userContent });
 
     conv = createConversation(params.tools, model, messages);
+    if (conv.total_bytes > MAX_CONVERSATION_BYTES) {
+      conversations.delete(conv.id);
+      return {
+        conversation_id: conv.id,
+        status: "error",
+        round: 0,
+        error: `Input too large (${(conv.total_bytes / 1024 / 1024).toFixed(1)}MB), limit ${(MAX_CONVERSATION_BYTES / 1024 / 1024).toFixed(0)}MB. Use a smaller file.`,
+      };
+    }
   }
 
   // Call MiMo
@@ -448,11 +492,23 @@ export async function agentExecute(
   const message = response.choices[0].message;
 
   // Append assistant message to conversation
-  conv.messages.push({
+  const assistantMsg: ConversationMessage = {
     role: "assistant",
     content: message.content,
     tool_calls: message.tool_calls,
-  });
+  };
+  const assistantMsgBytes = estimateMessageBytes(assistantMsg);
+  if (conv.total_bytes + assistantMsgBytes > MAX_CONVERSATION_BYTES) {
+    return {
+      conversation_id: conv.id,
+      status: "error",
+      round: conv.round,
+      error: `Conversation size limit exceeded (${(MAX_CONVERSATION_BYTES / 1024 / 1024).toFixed(0)}MB). Starting a new conversation is recommended.`,
+      usage: response?.usage,
+    };
+  }
+  conv.messages.push(assistantMsg);
+  conv.total_bytes += assistantMsgBytes;
   conv.round++;
   conv.last_active = Date.now();
 
